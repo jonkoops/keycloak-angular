@@ -210,32 +210,38 @@ export class KeycloakService {
    * @returns
    * A Promise with a boolean indicating if the initialization was successful.
    */
-  init(options: KeycloakOptions = {}): Promise<boolean> {
-    return new Promise((resolve, reject) => {
+  async init(options: KeycloakOptions = {}): Promise<boolean> {
       this.initServiceValues(options);
       const { config, initOptions } = options;
 
-      this._instance = Keycloak(config);
+    // Force Keycloak to always use native promises, even if overwritten by the user.
+    initOptions.promiseType = 'native';
+
+    this._instance = Keycloak<'native'>(config);
       this.bindsKeycloakEvents();
-      this._instance
-        .init(initOptions)
-        .success(async authenticated => {
+
+    try {
+      const authenticated = await this._instance.init(initOptions);
+
           if (authenticated && this._loadUserProfileAtStartUp) {
             await this.loadUserProfile();
           }
-          resolve(authenticated);
-        })
-        .error(kcError => {
+
+      return authenticated;
+    } catch (kcError) {
+      // TODO: Figure out if this exception is still the same.
           let msg = 'An error happened during Keycloak initialization.';
+
           if (kcError) {
-            let { error, error_description } = kcError;
+        const { error, error_description } = kcError;
+
             msg = msg.concat(
               `\nAdapter error details:\nError: ${error}\nDescription: ${error_description}`
             );
           }
-          reject(msg);
-        });
-    });
+
+      throw new Error(msg);
+  }
   }
 
   /**
@@ -259,18 +265,12 @@ export class KeycloakService {
    * @returns
    * A void Promise if the login is successful and after the user profile loading.
    */
-  login(options: Keycloak.KeycloakLoginOptions = {}): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this._instance
-        .login(options)
-        .success(async () => {
+  async login(options: Keycloak.KeycloakLoginOptions = {}): Promise<void> {
+    await this._instance.login(options);
+
           if (this._loadUserProfileAtStartUp) {
             await this.loadUserProfile();
           }
-          resolve();
-        })
-        .error(() => reject(`An error happened during the login.`));
-    });
   }
 
   /**
@@ -281,20 +281,10 @@ export class KeycloakService {
    * @returns
    * A void Promise if the logout was successful, cleaning also the userProfile.
    */
-  logout(redirectUri?: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const options: any = {
-        redirectUri
-      };
-
-      this._instance
-        .logout(options)
-        .success(() => {
+  async logout(redirectUri?: string): Promise<void> {
+    // TODO: Write type definitions for logout function.
+    await this._instance.logout({ redirectUri });
           this._userProfile = undefined;
-          resolve();
-        })
-        .error(() => reject('An error happened during logout.'));
-    });
   }
 
   /**
@@ -307,15 +297,8 @@ export class KeycloakService {
    * @returns
    * A void Promise if the register flow was successful.
    */
-  register(options: Keycloak.KeycloakLoginOptions = { action: 'register' }): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this._instance
-        .register(options)
-        .success(() => {
-          resolve();
-        })
-        .error(() => reject('An error happened during the register execution.'));
-    });
+  async register(options: Keycloak.KeycloakLoginOptions = { action: 'register' }): Promise<void> {
+    return this._instance.register(options);
   }
 
   /**
@@ -377,8 +360,8 @@ export class KeycloakService {
       if (!this._instance.authenticated) {
         return false;
       }
-      await this.updateToken(20);
-      return true;
+
+      return this.updateToken(20);
     } catch (error) {
       return false;
     }
@@ -408,31 +391,22 @@ export class KeycloakService {
    * @returns
    * Promise with a boolean indicating if the token was succesfully updated.
    */
-  updateToken(minValidity: number = 5): Promise<boolean> {
-    return new Promise(async (resolve, reject) => {
+  async updateToken(minValidity: number = 5): Promise<boolean> {
       // TODO: this is a workaround until the silent refresh (issue #43)
       // is not implemented, avoiding the redirect loop.
       if (this._silentRefresh) {
         if (this.isTokenExpired()) {
-          reject('Failed to refresh the token, or the session is expired');
+        throw new Error('Failed to refresh the token, or the session is expired');
         } else {
-          resolve(true);
+        return true;
         }
-        return;
       }
 
       if (!this._instance) {
-        reject('Keycloak Angular library is not initialized.');
-        return;
+      throw new Error('Keycloak Angular library is not initialized.');
       }
 
-      this._instance
-        .updateToken(minValidity)
-        .success(refreshed => {
-          resolve(refreshed);
-        })
-        .error(() => reject('Failed to refresh the token, or the session is expired'));
-    });
+    return this._instance.updateToken(minValidity);
   }
 
   /**
@@ -445,26 +419,17 @@ export class KeycloakService {
    * @returns
    * A promise with the KeycloakProfile data loaded.
    */
-  loadUserProfile(forceReload: boolean = false): Promise<Keycloak.KeycloakProfile> {
-    return new Promise(async (resolve, reject) => {
+  async loadUserProfile(forceReload: boolean = false): Promise<Keycloak.KeycloakProfile> {
       if (this._userProfile && !forceReload) {
-        resolve(this._userProfile);
-        return;
+      return this._userProfile;
       }
 
       if (!this._instance.authenticated) {
-        reject('The user profile was not loaded as the user is not logged in.');
-        return;
+      throw new Error('The user profile was not loaded as the user is not logged in.');
       }
 
-      this._instance
-        .loadUserProfile()
-        .success(result => {
-          this._userProfile = result as Keycloak.KeycloakProfile;
-          resolve(this._userProfile);
-        })
-        .error(() => reject('The user profile could not be loaded.'));
-    });
+    this._userProfile = await this._instance.loadUserProfile();
+    return this._userProfile;
   }
 
   /**
